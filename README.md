@@ -306,6 +306,10 @@ Both containers should show `healthy` in the Status column.
 
 ### 4. Seed the relational database
 
+> **Your task:** before running this step, you need to implement the seed functions inside `skeleton/seed_postgres.py`. The connection setup and helper functions are already provided — you write the body of each `seed_*` function. See [Your Tasks — Writing Your Seeding Scripts](#writing-your-seeding-scripts) for guidance and examples.
+
+Once implemented:
+
 ```bash
 # macOS / Linux:
 python3 skeleton/seed_postgres.py
@@ -706,6 +710,97 @@ All source data lives in the `train-mock-data/` folder as structured JSON files.
 ---
 
 ## Your Tasks
+
+### Writing Your Seeding Scripts
+
+Two seeding scripts are left for you to implement:
+
+- `skeleton/seed_postgres.py` — reads JSON files from `train-mock-data/` and inserts rows into your PostgreSQL tables
+- `skeleton/seed_neo4j.py` — reads the station JSON files and creates nodes and relationships in Neo4j
+
+The connection setup, helper functions, and overall call order are already in place. **Your job is to implement each `seed_*` function** by extracting the right fields from the loaded JSON and writing the insert logic.
+
+---
+
+#### PostgreSQL seeder (`seed_postgres.py`)
+
+Each `seed_*` function receives an open cursor. Use the `insert_many` helper to bulk-insert rows. The column names you pass must match your `schema.sql` table definition exactly.
+
+**Basic example — inserting flat records:**
+
+```python
+def seed_metro_stations(cur):
+    data = load("metro_stations.json")
+    rows = [
+        (s["station_id"], s["name"], s["zone"])
+        for s in data
+    ]
+    n = insert_many(cur, "metro_stations", ["station_id", "name", "zone"], rows)
+    print(f"  metro_stations: {n} rows")
+```
+
+**Nested example — flattening a list inside each record:**
+
+Some JSON fields are nested lists (e.g. a schedule that contains multiple stops). Loop over the outer list and the inner list together to produce one row per stop:
+
+```python
+def seed_metro_schedules(cur):
+    data = load("metro_schedules.json")
+    rows = []
+    for schedule in data:
+        for stop in schedule["stops"]:
+            rows.append((
+                schedule["schedule_id"],
+                stop["station_id"],
+                stop["arrival_time"],
+                stop["stop_order"],
+            ))
+    n = insert_many(cur, "metro_schedule_stops",
+                    ["schedule_id", "station_id", "arrival_time", "stop_order"], rows)
+    print(f"  metro_schedule_stops: {n} rows")
+```
+
+`insert_many` generates a single `INSERT … VALUES %s ON CONFLICT DO NOTHING` — safe to re-run as many times as needed.
+
+---
+
+#### Neo4j seeder (`seed_neo4j.py`)
+
+Inside the `seed()` function, use `session.run()` to execute Cypher. Use `MERGE` instead of `CREATE` so re-runs do not produce duplicate nodes or relationships.
+
+**Creating nodes:**
+
+```python
+for s in metro_stations:
+    session.run(
+        "MERGE (n:MetroStation {station_id: $id}) "
+        "SET n.name = $name, n.zone = $zone",
+        id=s["station_id"], name=s["name"], zone=s.get("zone"),
+    )
+print(f"  Created {len(metro_stations)} MetroStation nodes")
+```
+
+**Creating relationships between nodes:**
+
+Each metro station lists its adjacent stations. Loop over them to create directed links:
+
+```python
+for s in metro_stations:
+    for adj in s.get("adjacent_stations", []):
+        session.run(
+            "MATCH (a:MetroStation {station_id: $from_id}) "
+            "MATCH (b:MetroStation {station_id: $to_id}) "
+            "MERGE (a)-[r:METRO_LINK {line: $line}]->(b) "
+            "SET r.travel_time_min = $time",
+            from_id=s["station_id"], to_id=adj["station_id"],
+            line=adj["line"], time=adj["travel_time_min"],
+        )
+print("  Created metro links")
+```
+
+Study each JSON file in `train-mock-data/` carefully before writing your seeder — the fields in the JSON become the columns in your table (PostgreSQL) or the properties on your nodes and relationships (Neo4j).
+
+---
 
 ### Task 1 — Design and Extend the Relational Schema (PostgreSQL)
 
