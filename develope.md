@@ -242,7 +242,7 @@ Decision:
 
 #### `registered_users`
 
-Stores account and authentication data.
+Stores account profile data.
 
 Suggested columns:
 
@@ -252,7 +252,6 @@ full_name TEXT NOT NULL,
 first_name TEXT NOT NULL,
 surname TEXT NOT NULL,
 email TEXT NOT NULL UNIQUE,
-password TEXT NOT NULL,
 phone TEXT,
 date_of_birth DATE,
 secret_question TEXT NOT NULL,
@@ -261,10 +260,25 @@ registered_at TIMESTAMPTZ NOT NULL,
 is_active BOOLEAN NOT NULL DEFAULT TRUE
 ```
 
+#### `user_password_credentials`
+
+Stores password authentication data separately from the user profile table.
+
+Suggested columns:
+
+```sql
+user_id VARCHAR(20) PRIMARY KEY REFERENCES registered_users(user_id) ON DELETE CASCADE,
+password_hash TEXT NOT NULL,
+password_updated_at TIMESTAMPTZ NOT NULL
+```
+
 Decision:
 
 - The source JSON only has `full_name`, but UI expects `first_name` and `surname`, so seed script should split `full_name`.
-- Password remains plain text because README says this is intentional for teaching.
+- Password must not be stored in `registered_users`.
+- Password must not be stored in plain text.
+- Store passwords using Argon2id.
+- Store the Argon2id encoded hash string in `user_password_credentials.password_hash`; the salt can be embedded in the same Argon2id encoded string.
 
 ---
 
