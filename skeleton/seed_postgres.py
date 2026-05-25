@@ -449,6 +449,28 @@ def seed_feedback(cur):
     print(f"  feedback: {inserted} inserted")
 
 
+def verify_counts(cur):
+    tables = [
+        "metro_stations",
+        "national_rail_stations",
+        "metro_schedules",
+        "national_rail_schedules",
+        "national_rail_fares",
+        "national_rail_seat_layouts",
+        "national_rail_seats",
+        "registered_users",
+        "user_password_credentials",
+        "national_rail_bookings",
+        "metro_travels",
+        "payments",
+        "feedback",
+    ]
+    print("\nRow counts:")
+    for table in tables:
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        count = cur.fetchone()[0]
+        print(f"  {table}: {count}")
+
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -472,6 +494,7 @@ def main():
         seed_feedback(cur)
         conn.commit()
         print("\nAll done. Database seeded successfully.")
+        verify_counts(cur)
     except Exception as e:
         conn.rollback()
         print(f"\nError: {e}")
