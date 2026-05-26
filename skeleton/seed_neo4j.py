@@ -1,14 +1,13 @@
 """
-TransitFlow — Neo4j Seeder
+TransitFlow - Neo4j Seeder
+==========================
 Run once after starting Docker:
-    python skeleton/seed_neo4j.py
+    python -m skeleton.seed_neo4j
 
-Loads station and network data from train-mock-data/:
-  - metro_stations.json         — city metro stations and adjacencies
-  - national_rail_stations.json — national rail stations and adjacencies
-
-Design your graph schema (node labels, relationship types, properties)
-based on the data in these files, then implement the seed() function below.
+This script loads graph data from train-mock-data/ and creates:
+  - Station nodes for metro and national rail stations
+  - CONNECTS_TO relationships for adjacent stations
+  - INTERCHANGES_WITH relationships for metro-national rail transfers
 """
 
 import json
@@ -19,12 +18,25 @@ sys.path.insert(0, ".")
 
 from databases.graph.queries import _driver
 
+
 _DATA_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "train-mock-data")
 )
 
+# Mock data marks which stations interchange, but it does not define a transfer
+# time. This team default makes transfer edges usable by weighted routing.
+INTERCHANGE_TIME_MIN = 5
+
 
 def _load(filename):
+    """Load a JSON data file from train-mock-data.
+
+    Args:
+        filename: JSON filename inside train-mock-data.
+
+    Returns:
+        Parsed JSON content.
+    """
     with open(os.path.join(_DATA_DIR, filename), encoding="utf-8") as f:
         return json.load(f)
 
@@ -47,17 +59,19 @@ def _create_constraints(session):
 
 
 def _create_station_nodes(session, stations, network):
-    """Create transit station nodes for one network.
+    """Create Station nodes for one transit network.
 
     Args:
         session: Active Neo4j session.
         stations: Station dictionaries loaded from JSON.
-        network: Network identifier stored on each node.
+        network: Network value stored on each node, e.g. "metro".
 
     Returns:
         None
     """
     for station in stations:
+        # All station nodes use one label. The network property separates metro
+        # from national rail while keeping shortest-path Cypher simple.
         session.run(
             """
             MERGE (s:Station {station_id: $station_id})
@@ -73,14 +87,19 @@ def _create_station_nodes(session, stations, network):
 
 
 def _create_network_links(session, stations, network):
-    """Create directed links between adjacent stations."""
+    """Create CONNECTS_TO relationships between adjacent stations.
+
+    Args:
+        session: Active Neo4j session.
+        stations: Station dictionaries loaded from JSON.
+        network: Network value stored on each relationship.
+
+    Returns:
+        None
+    """
     for station in stations:
         for adjacent in station.get("adjacent_stations", []):
-            target_id = adjacent.get("to_station_id") or adjacent.get("station_id")
-            
-            if not target_id:
-                continue
-
+            # The mock data stores the destination station ID in adjacent["station_id"].
             session.run(
                 """
                 MATCH (from:Station {station_id: $from_id})
@@ -92,7 +111,7 @@ def _create_network_links(session, stations, network):
                 SET r.travel_time_min = $travel_time_min
                 """,
                 from_id=station["station_id"],
-                to_id=target_id,
+                to_id=adjacent["station_id"],
                 network=network,
                 line=adjacent["line"],
                 travel_time_min=adjacent["travel_time_min"],
@@ -100,7 +119,7 @@ def _create_network_links(session, stations, network):
 
 
 def _create_interchange_links(session, metro_stations):
-    """Create directed interchange links between metro and rail stations.
+    """Create bidirectional INTERCHANGES_WITH links between metro and rail.
 
     Args:
         session: Active Neo4j session.
@@ -114,6 +133,8 @@ def _create_interchange_links(session, metro_stations):
         if not rail_station_id:
             continue
 
+        # Interchange relationships are bidirectional so routes can cross from
+        # metro to rail or rail to metro.
         session.run(
             """
             MATCH (metro:Station {station_id: $metro_station_id, network: 'metro'})
@@ -132,7 +153,7 @@ def _create_interchange_links(session, metro_stations):
             """,
             metro_station_id=station["station_id"],
             rail_station_id=rail_station_id,
-            travel_time_min=5,
+            travel_time_min=INTERCHANGE_TIME_MIN,
         )
 
 
@@ -150,16 +171,13 @@ def seed():
 
     with _driver() as driver:
         with driver.session() as session:
+            # Rebuild the graph from scratch so repeated seed runs are stable.
             session.run("MATCH (n) DETACH DELETE n")
             print("  Cleared existing graph data")
 
             _create_constraints(session)
             _create_station_nodes(session, metro_stations, "metro")
-            _create_station_nodes(
-                session,
-                rail_stations,
-                "national_rail",
-            )
+            _create_station_nodes(session, rail_stations, "national_rail")
             print(
                 f"  Created {len(metro_stations)} metro stations and "
                 f"{len(rail_stations)} national rail stations"
