@@ -438,18 +438,14 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     Returns:
         List of dicts: station_id, name, network, hops_away, lines_affected.
     """
-    if hops <= 0:
-        return []
-
     # Cypher variable-length relationship bounds cannot be parameterised, so
     # we clamp the integer in Python before inserting it into the query string.
-    safe_hops = int(hops)
+    safe_hops = max(0, int(hops))
     cypher = f"""
     MATCH (delayed:Station {{station_id: $delayed_station_id}})
     MATCH path = shortestPath(
-        (delayed)-[:CONNECTS_TO|INTERCHANGES_WITH*1..{safe_hops}]-(affected:Station)
+        (delayed)-[:CONNECTS_TO|INTERCHANGES_WITH*0..{safe_hops}]-(affected:Station)
     )
-    WHERE delayed <> affected
     WITH affected,
          length(path) AS hops_away,
          relationships(path) AS path_relationships
