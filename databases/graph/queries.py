@@ -184,6 +184,97 @@ def query_shortest_route(
     }
 
 
+# TASK 6 EXTENSION:
+def query_fewest_transfers_route(
+    origin_id: str,
+    destination_id: str,
+    network: str = "auto",
+) -> dict:
+    """
+    Find a route that minimises the number of traversed station links.
+
+    Args:
+        origin_id: e.g. "MS01" or "NR01".
+        destination_id: e.g. "MS09" or "NR05".
+        network: "metro", "rail", "national_rail", or "auto".
+
+    Returns:
+        Dict with found, origin_id, destination_id, total_time_min, path, legs.
+    """
+    network_filter = _normalise_network(network)
+    relationship_pattern = (
+        "CONNECTS_TO|INTERCHANGES_WITH"
+        if network_filter == "auto"
+        else "CONNECTS_TO"
+    )
+
+    # TASK 6 EXTENSION:
+    # This query intentionally uses Neo4j's built-in shortestPath() instead of
+    # APOC Dijkstra. Dijkstra is the right tool when the product goal is the
+    # lowest weighted travel_time_min, but this extension is optimising a
+    # different passenger promise: fewer station-to-station hops and fewer route
+    # decisions. That matters commercially because travellers with luggage,
+    # families, tourists, and accessibility-sensitive passengers often prefer a
+    # route that is simpler to follow even when it is a few minutes slower.
+    # shortestPath() matches that business value directly because it minimises
+    # the number of relationships in the path before we add up the travel time
+    # only for display compatibility with the existing route UI.
+    cypher = f"""
+    MATCH (origin:Station {{station_id: $origin_id}})
+    MATCH (destination:Station {{station_id: $destination_id}})
+    WHERE $network = 'auto'
+       OR (origin.network = $network AND destination.network = $network)
+    MATCH path = shortestPath(
+        (origin)-[:{relationship_pattern}*..30]-(destination)
+    )
+    WHERE $network = 'auto'
+       OR all(rel IN relationships(path) WHERE rel.network = $network)
+    WITH nodes(path) AS route_nodes,
+         relationships(path) AS route_relationships,
+         reduce(
+             total = 0,
+             rel IN relationships(path) |
+             total + coalesce(rel.travel_time_min, 0)
+         ) AS total_time_min
+    RETURN
+        total_time_min,
+        [station IN route_nodes | __STATION_PROJECTION__] AS path,
+        __LEGS_PROJECTION__ AS legs
+    """.replace("__STATION_PROJECTION__", _station_projection()).replace(
+        "__LEGS_PROJECTION__",
+        _legs_projection(),
+    )
+
+    with _driver() as driver:
+        with driver.session() as session:
+            result = session.run(
+                cypher,
+                origin_id=origin_id,
+                destination_id=destination_id,
+                network=network_filter,
+            )
+            record = result.single()
+
+    if record is None:
+        return {
+            "found": False,
+            "origin_id": origin_id,
+            "destination_id": destination_id,
+            "total_time_min": None,
+            "path": [],
+            "legs": [],
+        }
+
+    return {
+        "found": True,
+        "origin_id": origin_id,
+        "destination_id": destination_id,
+        "total_time_min": record["total_time_min"],
+        "path": record["path"],
+        "legs": record["legs"],
+    }
+
+
 def query_cheapest_route(
     origin_id: str,
     destination_id: str,
@@ -347,9 +438,12 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     Returns:
         List of dicts: station_id, name, network, hops_away, lines_affected.
     """
+    if hops <= 0:
+        return []
+
     # Cypher variable-length relationship bounds cannot be parameterised, so
     # we clamp the integer in Python before inserting it into the query string.
-    safe_hops = max(1, int(hops))
+    safe_hops = int(hops)
     cypher = f"""
     MATCH (delayed:Station {{station_id: $delayed_station_id}})
     MATCH path = shortestPath(
