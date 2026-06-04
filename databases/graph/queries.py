@@ -4,9 +4,9 @@ TransitFlow - Neo4j Graph Database Layer
 This module handles route and network queries against Neo4j.
 
 Graph schema used by skeleton/seed_neo4j.py:
-  - Node label: Station
+  - Node labels: Station + MetroStation or NationalRailStation
   - Station properties: station_id, name, lines, network
-  - Relationship types: CONNECTS_TO, INTERCHANGES_WITH
+  - Relationship types: METRO_LINK, RAIL_LINK, INTERCHANGE_TO
   - Relationship properties: network, line, travel_time_min
 """
 
@@ -15,6 +15,10 @@ from __future__ import annotations
 from neo4j import GraphDatabase
 
 from skeleton.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+
+# TASK 6 EXTENSION:
+# This file includes a fewest-transfers route variant in addition to the
+# required weighted route queries.
 
 
 def _driver():
@@ -58,6 +62,23 @@ def _station_projection() -> str:
         lines: station.lines
     }
     """
+
+
+def _route_relationship_filter(network_filter: str, directed: bool = True) -> str:
+    arrow = ">" if directed else ""
+    if network_filter == "metro":
+        return f"METRO_LINK{arrow}"
+    if network_filter == "national_rail":
+        return f"RAIL_LINK{arrow}"
+    return f"METRO_LINK{arrow}|RAIL_LINK{arrow}|INTERCHANGE_TO{arrow}"
+
+
+def _route_relationship_pattern(network_filter: str) -> str:
+    if network_filter == "metro":
+        return "METRO_LINK"
+    if network_filter == "national_rail":
+        return "RAIL_LINK"
+    return "METRO_LINK|RAIL_LINK|INTERCHANGE_TO"
 
 
 def _legs_projection() -> str:
@@ -121,14 +142,11 @@ def query_shortest_route(
         Dict with found, origin_id, destination_id, total_time_min, path, legs.
     """
     network_filter = _normalise_network(network)
-    relationship_filter = (
-        "CONNECTS_TO>|INTERCHANGES_WITH>"
-        if network_filter == "auto"
-        else "CONNECTS_TO>"
-    )
+    relationship_filter = _route_relationship_filter(network_filter)
 
     # APOC Dijkstra finds the weighted shortest path using travel_time_min.
-    # Single-network queries avoid interchange edges by traversing CONNECTS_TO only.
+    # Single-network queries avoid interchange edges by traversing only the
+    # relationship type for that network.
     cypher = """
     MATCH (origin:Station {station_id: $origin_id})
     MATCH (destination:Station {station_id: $destination_id})
@@ -202,11 +220,7 @@ def query_fewest_transfers_route(
         Dict with found, origin_id, destination_id, total_time_min, path, legs.
     """
     network_filter = _normalise_network(network)
-    relationship_pattern = (
-        "CONNECTS_TO|INTERCHANGES_WITH"
-        if network_filter == "auto"
-        else "CONNECTS_TO"
-    )
+    relationship_pattern = _route_relationship_pattern(network_filter)
 
     # TASK 6 EXTENSION:
     # This query intentionally uses Neo4j's built-in shortestPath() instead of
@@ -349,7 +363,7 @@ def query_alternative_routes(
     cypher = """
     MATCH (origin:Station {station_id: $origin_id})
     MATCH (destination:Station {station_id: $destination_id})
-    MATCH path = (origin)-[:CONNECTS_TO|INTERCHANGES_WITH*1..12]->(destination)
+    MATCH path = (origin)-[:METRO_LINK|RAIL_LINK|INTERCHANGE_TO*1..12]->(destination)
     WHERE none(station IN nodes(path)[1..-1] WHERE station.station_id = $avoid_station_id)
       AND ($network = 'auto'
            OR all(rel IN relationships(path) WHERE rel.network = $network))
@@ -413,7 +427,7 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
             "travel_time_min": leg["travel_time_min"],
         }
         for leg in route["legs"]
-        if leg["relationship_type"] == "INTERCHANGES_WITH"
+        if leg["relationship_type"] == "INTERCHANGE_TO"
     ]
 
     return {
@@ -444,7 +458,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     cypher = f"""
     MATCH (delayed:Station {{station_id: $delayed_station_id}})
     MATCH path = shortestPath(
-        (delayed)-[:CONNECTS_TO|INTERCHANGES_WITH*0..{safe_hops}]-(affected:Station)
+        (delayed)-[:METRO_LINK|RAIL_LINK|INTERCHANGE_TO*0..{safe_hops}]-(affected:Station)
     )
     WITH affected,
          length(path) AS hops_away,

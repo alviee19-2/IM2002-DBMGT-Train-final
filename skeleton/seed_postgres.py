@@ -15,7 +15,7 @@ import sys
 
 import psycopg2
 from argon2 import PasswordHasher
-from psycopg2.extras import Json, execute_values
+from psycopg2.extras import execute_values
 
 # ── resolve paths ────────────────────────────────────────────────────────────
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -126,35 +126,50 @@ def seed_metro_schedules(cur):
         "direction",
         "origin_station_id",
         "destination_station_id",
-        "stops_in_order",
         "first_train_time",
         "last_train_time",
-        "travel_time_from_origin_min",
         "base_fare_usd",
         "per_stop_rate_usd",
         "frequency_min",
         "operates_on",
     ]
-    rows = [
-        (
-            item["schedule_id"],
-            item["line"],
-            item["direction"],
-            item["origin_station_id"],
-            item["destination_station_id"],
-            Json(item["stops_in_order"]),
-            item["first_train_time"],
-            item["last_train_time"],
-            Json(item["travel_time_from_origin_min"]),
-            item["base_fare_usd"],
-            item["per_stop_rate_usd"],
-            item["frequency_min"],
-            item["operates_on"],
+    rows = []
+    stop_rows = []
+    for item in data:
+        rows.append(
+            (
+                item["schedule_id"],
+                item["line"],
+                item["direction"],
+                item["origin_station_id"],
+                item["destination_station_id"],
+                item["first_train_time"],
+                item["last_train_time"],
+                item["base_fare_usd"],
+                item["per_stop_rate_usd"],
+                item["frequency_min"],
+                item["operates_on"],
+            )
         )
-        for item in data
-    ]
+        travel_times = item["travel_time_from_origin_min"]
+        for stop_order, station_id in enumerate(item["stops_in_order"], start=1):
+            stop_rows.append(
+                (
+                    item["schedule_id"],
+                    station_id,
+                    stop_order,
+                    travel_times[station_id],
+                )
+            )
     inserted = insert_many(cur, "metro_schedules", columns, rows)
+    inserted_stops = insert_many(
+        cur,
+        "metro_schedule_stops",
+        ["schedule_id", "station_id", "stop_order", "travel_time_from_origin_min"],
+        stop_rows,
+    )
     print(f"  metro_schedules: {inserted} inserted")
+    print(f"  metro_schedule_stops: {inserted_stops} inserted")
 
 
 def seed_national_rail_schedules(cur):
@@ -166,15 +181,13 @@ def seed_national_rail_schedules(cur):
         "direction",
         "origin_station_id",
         "destination_station_id",
-        "stops_in_order",
-        "passed_through_stations",
         "first_train_time",
         "last_train_time",
-        "travel_time_from_origin_min",
         "frequency_min",
         "operates_on",
     ]
     schedule_rows = []
+    stop_rows = []
     fare_rows = []
     for item in data:
         schedule_rows.append(
@@ -185,15 +198,24 @@ def seed_national_rail_schedules(cur):
                 item["direction"],
                 item["origin_station_id"],
                 item["destination_station_id"],
-                Json(item["stops_in_order"]),
-                Json(item.get("passed_through_stations", [])),
                 item["first_train_time"],
                 item["last_train_time"],
-                Json(item["travel_time_from_origin_min"]),
                 item["frequency_min"],
                 item["operates_on"],
             )
         )
+        travel_times = item["travel_time_from_origin_min"]
+        passed_through = set(item.get("passed_through_stations", []))
+        for stop_order, station_id in enumerate(item["stops_in_order"], start=1):
+            stop_rows.append(
+                (
+                    item["schedule_id"],
+                    station_id,
+                    stop_order,
+                    travel_times[station_id],
+                    station_id in passed_through,
+                )
+            )
         for fare_class, fare in item.get("fare_classes", {}).items():
             fare_rows.append(
                 (
@@ -216,8 +238,21 @@ def seed_national_rail_schedules(cur):
         ["schedule_id", "fare_class", "base_fare_usd", "per_stop_rate_usd"],
         fare_rows,
     )
+    inserted_stops = insert_many(
+        cur,
+        "national_rail_schedule_stops",
+        [
+            "schedule_id",
+            "station_id",
+            "stop_order",
+            "travel_time_from_origin_min",
+            "is_passed_through",
+        ],
+        stop_rows,
+    )
     print(f"  national_rail_schedules: {inserted_schedules} inserted")
     print(f"  national_rail_fares: {inserted_fares} inserted")
+    print(f"  national_rail_schedule_stops: {inserted_stops} inserted")
 
 
 def seed_seat_layouts(cur):
@@ -408,11 +443,20 @@ def seed_metro_travels(cur):
 
 def seed_payments(cur):
     data = load("payments.json")
-    columns = ["payment_id", "booking_id", "amount_usd", "method", "status", "paid_at"]
+    columns = [
+        "payment_id",
+        "booking_id",
+        "trip_id",
+        "amount_usd",
+        "method",
+        "status",
+        "paid_at",
+    ]
     rows = [
         (
             item["payment_id"],
-            item["booking_id"],
+            item["booking_id"] if item["booking_id"].startswith("BK") else None,
+            item["booking_id"] if item["booking_id"].startswith("MT") else None,
             item["amount_usd"],
             item["method"],
             item["status"],
@@ -429,6 +473,7 @@ def seed_feedback(cur):
     columns = [
         "feedback_id",
         "booking_id",
+        "trip_id",
         "user_id",
         "rating",
         "comment",
@@ -437,7 +482,8 @@ def seed_feedback(cur):
     rows = [
         (
             item["feedback_id"],
-            item["booking_id"],
+            item["booking_id"] if item["booking_id"].startswith("BK") else None,
+            item["booking_id"] if item["booking_id"].startswith("MT") else None,
             item["user_id"],
             item["rating"],
             item.get("comment"),
@@ -455,7 +501,9 @@ def verify_counts(cur):
         "national_rail_stations",
         "metro_schedules",
         "national_rail_schedules",
+        "national_rail_schedule_stops",
         "national_rail_fares",
+        "metro_schedule_stops",
         "national_rail_seat_layouts",
         "national_rail_seats",
         "registered_users",

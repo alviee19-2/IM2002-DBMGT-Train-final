@@ -25,7 +25,8 @@ from __future__ import annotations
 import json
 import random
 import string
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
+from decimal import Decimal
 from typing import Optional
 
 import psycopg2
@@ -96,15 +97,21 @@ def query_national_rail_availability(
             SELECT
                 s.*,
                 origin_stop.stop_order AS origin_stop_order,
-                destination_stop.stop_order AS destination_stop_order
+                destination_stop.stop_order AS destination_stop_order,
+                origin_stop.travel_time_from_origin_min AS origin_time_min,
+                destination_stop.travel_time_from_origin_min AS destination_time_min
             FROM national_rail_schedules s
-            JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-                WITH ORDINALITY AS origin_stop(station_id, stop_order)
-                ON origin_stop.station_id = %s
-            JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-                WITH ORDINALITY AS destination_stop(station_id, stop_order)
-                ON destination_stop.station_id = %s
+            JOIN national_rail_schedule_stops origin_stop
+                ON origin_stop.schedule_id = s.schedule_id
+               AND origin_stop.station_id = %s
+            JOIN national_rail_schedule_stops destination_stop
+                ON destination_stop.schedule_id = s.schedule_id
+               AND destination_stop.station_id = %s
             WHERE origin_stop.stop_order < destination_stop.stop_order
+              AND (
+                  %s::DATE IS NULL
+                  OR lower(trim(to_char(%s::DATE, 'dy'))) = ANY (s.operates_on)
+              )
         )
         SELECT
             s.schedule_id,
@@ -113,8 +120,8 @@ def query_national_rail_availability(
             s.direction,
             s.origin_station_id AS schedule_origin_station_id,
             s.destination_station_id AS schedule_destination_station_id,
-            s.stops_in_order,
-            s.passed_through_stations,
+            stop_lists.stops_in_order,
+            stop_lists.passed_through_stations,
             s.first_train_time,
             s.last_train_time,
             s.frequency_min,
@@ -126,10 +133,7 @@ def query_national_rail_availability(
             s.origin_stop_order,
             s.destination_stop_order,
             (s.destination_stop_order - s.origin_stop_order)::INTEGER AS stops_travelled,
-            (
-                (s.travel_time_from_origin_min ->> %s)::INTEGER
-                - (s.travel_time_from_origin_min ->> %s)::INTEGER
-            ) AS travel_time_min,
+            (s.destination_time_min - s.origin_time_min)::INTEGER AS travel_time_min,
             COALESCE(seat_counts.total_seats, 0)::INTEGER AS total_seats,
             COUNT(b.booking_id)::INTEGER AS booked_seats,
             (COALESCE(seat_counts.total_seats, 0) - COUNT(b.booking_id))::INTEGER
@@ -139,6 +143,14 @@ def query_national_rail_availability(
             ON origin_station.station_id = %s
         JOIN national_rail_stations destination_station
             ON destination_station.station_id = %s
+        JOIN LATERAL (
+            SELECT
+                array_agg(station_id ORDER BY stop_order) AS stops_in_order,
+                array_agg(station_id ORDER BY stop_order)
+                    FILTER (WHERE is_passed_through) AS passed_through_stations
+            FROM national_rail_schedule_stops stops
+            WHERE stops.schedule_id = s.schedule_id
+        ) stop_lists ON TRUE
         LEFT JOIN LATERAL (
             SELECT COUNT(*)::INTEGER AS total_seats
             FROM national_rail_seats seats
@@ -156,15 +168,16 @@ def query_national_rail_availability(
             s.direction,
             s.origin_station_id,
             s.destination_station_id,
-            s.stops_in_order,
-            s.passed_through_stations,
             s.first_train_time,
             s.last_train_time,
             s.frequency_min,
             s.operates_on,
             s.origin_stop_order,
             s.destination_stop_order,
-            s.travel_time_from_origin_min,
+            s.origin_time_min,
+            s.destination_time_min,
+            stop_lists.stops_in_order,
+            stop_lists.passed_through_stations,
             origin_station.name,
             destination_station.name,
             seat_counts.total_seats
@@ -173,10 +186,10 @@ def query_national_rail_availability(
     params = (
         origin_id,
         destination_id,
+        travel_date,
+        travel_date,
         origin_id,
         destination_id,
-        destination_id,
-        origin_id,
         origin_id,
         destination_id,
         travel_date,
@@ -244,7 +257,7 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
             s.direction,
             s.origin_station_id AS schedule_origin_station_id,
             s.destination_station_id AS schedule_destination_station_id,
-            s.stops_in_order,
+            stop_lists.stops_in_order,
             s.first_train_time,
             s.last_train_time,
             s.frequency_min,
@@ -260,28 +273,31 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
             (destination_stop.stop_order - origin_stop.stop_order)::INTEGER
                 AS stops_travelled,
             (
-                (s.travel_time_from_origin_min ->> %s)::INTEGER
-                - (s.travel_time_from_origin_min ->> %s)::INTEGER
+                destination_stop.travel_time_from_origin_min
+                - origin_stop.travel_time_from_origin_min
             ) AS travel_time_min
         FROM metro_schedules s
-        JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-            WITH ORDINALITY AS origin_stop(station_id, stop_order)
-            ON origin_stop.station_id = %s
-        JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-            WITH ORDINALITY AS destination_stop(station_id, stop_order)
-            ON destination_stop.station_id = %s
+        JOIN metro_schedule_stops origin_stop
+            ON origin_stop.schedule_id = s.schedule_id
+           AND origin_stop.station_id = %s
+        JOIN metro_schedule_stops destination_stop
+            ON destination_stop.schedule_id = s.schedule_id
+           AND destination_stop.station_id = %s
         JOIN metro_stations origin_station
             ON origin_station.station_id = %s
         JOIN metro_stations destination_station
             ON destination_station.station_id = %s
+        JOIN LATERAL (
+            SELECT array_agg(station_id ORDER BY stop_order) AS stops_in_order
+            FROM metro_schedule_stops stops
+            WHERE stops.schedule_id = s.schedule_id
+        ) stop_lists ON TRUE
         WHERE origin_stop.stop_order < destination_stop.stop_order
         ORDER BY s.line, s.first_train_time, s.schedule_id;
     """
     params = (
         origin_id,
         destination_id,
-        destination_id,
-        origin_id,
         origin_id,
         destination_id,
         origin_id,
@@ -413,6 +429,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             email,
             phone,
             date_of_birth,
+            EXTRACT(YEAR FROM date_of_birth)::INTEGER AS year_of_birth,
             registered_at,
             is_active
         FROM registered_users
@@ -518,7 +535,7 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
     sql = """
         SELECT
             p.payment_id,
-            p.booking_id,
+            COALESCE(p.booking_id, p.trip_id) AS booking_id,
             CASE
                 WHEN rail.booking_id IS NOT NULL THEN 'national_rail'
                 WHEN metro.trip_id IS NOT NULL THEN 'metro'
@@ -534,12 +551,13 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
         LEFT JOIN national_rail_bookings rail
             ON rail.booking_id = p.booking_id
         LEFT JOIN metro_travels metro
-            ON metro.trip_id = p.booking_id
-        WHERE p.booking_id = %s;
+            ON metro.trip_id = p.trip_id
+        WHERE p.booking_id = %s
+           OR p.trip_id = %s;
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (booking_id,))
+            cur.execute(sql, (booking_id, booking_id))
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -621,12 +639,12 @@ def execute_booking(
                     (destination_stop.stop_order - origin_stop.stop_order)::INTEGER
                         AS stops_travelled
                 FROM national_rail_schedules s
-                JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-                    WITH ORDINALITY AS origin_stop(station_id, stop_order)
-                    ON origin_stop.station_id = %s
-                JOIN LATERAL jsonb_array_elements_text(s.stops_in_order)
-                    WITH ORDINALITY AS destination_stop(station_id, stop_order)
-                    ON destination_stop.station_id = %s
+                JOIN national_rail_schedule_stops origin_stop
+                    ON origin_stop.schedule_id = s.schedule_id
+                   AND origin_stop.station_id = %s
+                JOIN national_rail_schedule_stops destination_stop
+                    ON destination_stop.schedule_id = s.schedule_id
+                   AND destination_stop.station_id = %s
                 WHERE s.schedule_id = %s
                   AND origin_stop.stop_order < destination_stop.stop_order;
                 """,
@@ -675,7 +693,7 @@ def execute_booking(
                           WHERE b.schedule_id = seats.schedule_id
                             AND b.travel_date = %s::DATE
                             AND b.seat_id = seats.seat_id
-                            AND b.status = 'confirmed'
+                            AND b.status <> 'cancelled'
                       )
                     ORDER BY seats.coach, seats.row_number, seats.seat_column, seats.seat_id
                     LIMIT 1
@@ -716,7 +734,7 @@ def execute_booking(
                 WHERE schedule_id = %s
                   AND travel_date = %s::DATE
                   AND seat_id = %s
-                  AND status = 'confirmed'
+                  AND status <> 'cancelled'
                 LIMIT 1;
                 """,
                 (schedule_id, parsed_travel_date, seat["seat_id"]),
@@ -809,6 +827,41 @@ def execute_booking(
                 ),
             )
             booking = dict(cur.fetchone())
+
+            payment_id = None
+            for _ in range(20):
+                candidate = _gen_payment_id()
+                cur.execute(
+                    """
+                    SELECT payment_id
+                    FROM payments
+                    WHERE payment_id = %s;
+                    """,
+                    (candidate,),
+                )
+                if not cur.fetchone():
+                    payment_id = candidate
+                    break
+            if payment_id is None:
+                conn.rollback()
+                return False, "Could not generate a unique payment_id."
+
+            cur.execute(
+                """
+                INSERT INTO payments (
+                    payment_id,
+                    booking_id,
+                    trip_id,
+                    amount_usd,
+                    method,
+                    status,
+                    paid_at
+                )
+                VALUES (%s, %s, NULL, %s, 'credit_card', 'paid', %s);
+                """,
+                (payment_id, booking_id, amount_usd, booked_at),
+            )
+            booking["payment_id"] = payment_id
         conn.commit()
         return True, booking
     except psycopg2.Error as exc:
@@ -843,8 +896,12 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                     booking_id,
                     user_id,
                     amount_usd,
-                    status
-                FROM national_rail_bookings
+                    status,
+                    travel_date,
+                    departure_time,
+                    s.service_type
+                FROM national_rail_bookings b
+                JOIN national_rail_schedules s ON s.schedule_id = b.schedule_id
                 WHERE booking_id = %s
                 FOR UPDATE;
                 """,
@@ -867,6 +924,38 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 conn.rollback()
                 return False, "Only confirmed bookings can be cancelled."
 
+            departure_time = booking["departure_time"]
+            if isinstance(departure_time, str):
+                departure_time = time.fromisoformat(departure_time)
+            departure_at = datetime.combine(
+                booking["travel_date"],
+                departure_time,
+                tzinfo=timezone.utc,
+            )
+            hours_before = (departure_at - datetime.now(timezone.utc)).total_seconds() / 3600
+
+            if booking["service_type"] == "express":
+                if hours_before >= 48:
+                    refund_percent, admin_fee = 100, Decimal("1.00")
+                elif hours_before >= 24:
+                    refund_percent, admin_fee = 50, Decimal("1.00")
+                else:
+                    refund_percent, admin_fee = 0, Decimal("0.00")
+            else:
+                if hours_before >= 48:
+                    refund_percent, admin_fee = 100, Decimal("0.00")
+                elif hours_before >= 24:
+                    refund_percent, admin_fee = 75, Decimal("0.50")
+                elif hours_before >= 2:
+                    refund_percent, admin_fee = 50, Decimal("0.50")
+                else:
+                    refund_percent, admin_fee = 0, Decimal("0.00")
+
+            refund_amount = max(
+                booking["amount_usd"] * Decimal(refund_percent) / Decimal("100") - admin_fee,
+                Decimal("0.00"),
+            )
+
             cur.execute(
                 """
                 UPDATE national_rail_bookings
@@ -874,12 +963,23 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 WHERE booking_id = %s
                 RETURNING
                     booking_id,
-                    status,
-                    amount_usd AS refund_amount_usd;
+                    status;
                 """,
                 (booking_id,),
             )
             result = dict(cur.fetchone())
+            result["refund_amount_usd"] = round(refund_amount, 2)
+            result["refund_percent"] = refund_percent
+            result["admin_fee_usd"] = admin_fee
+
+            cur.execute(
+                """
+                UPDATE payments
+                SET status = CASE WHEN %s > 0 THEN 'refunded' ELSE status END
+                WHERE booking_id = %s;
+                """,
+                (refund_amount, booking_id),
+            )
         conn.commit()
         return True, result
     except psycopg2.Error as exc:

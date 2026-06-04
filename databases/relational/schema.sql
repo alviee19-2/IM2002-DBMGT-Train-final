@@ -29,6 +29,8 @@
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS metro_stations (
+    -- Natural station codes are stable in the mock operator data and make
+    -- joins/readouts easier than surrogate IDs for this teaching dataset.
     station_id VARCHAR(10) PRIMARY KEY,
     name TEXT NOT NULL,
     lines TEXT[] NOT NULL,
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS metro_stations (
 );
 
 CREATE TABLE IF NOT EXISTS national_rail_stations (
+    -- Natural station codes are stable in the mock operator data and make
+    -- joins/readouts easier than surrogate IDs for this teaching dataset.
     station_id VARCHAR(10) PRIMARY KEY,
     name TEXT NOT NULL,
     lines TEXT[] NOT NULL,
@@ -49,39 +53,57 @@ CREATE TABLE IF NOT EXISTS national_rail_stations (
 );
 
 CREATE TABLE IF NOT EXISTS metro_schedules (
+    -- Schedule IDs come from the timetable feed; keeping them as PKs avoids an
+    -- extra lookup layer in booking and route queries.
     schedule_id VARCHAR(20) PRIMARY KEY,
     line VARCHAR(10) NOT NULL,
     direction VARCHAR(20) NOT NULL,
-    origin_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id),
-    destination_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id),
-    stops_in_order JSONB NOT NULL,
+    origin_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
     first_train_time TIME NOT NULL,
     last_train_time TIME NOT NULL,
-    travel_time_from_origin_min JSONB NOT NULL,
     base_fare_usd NUMERIC(8,2) NOT NULL,
     per_stop_rate_usd NUMERIC(8,2) NOT NULL,
     frequency_min INTEGER NOT NULL,
     operates_on TEXT[] NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS metro_schedule_stops (
+    schedule_id VARCHAR(20) NOT NULL REFERENCES metro_schedules(schedule_id) ON DELETE CASCADE,
+    station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    stop_order INTEGER NOT NULL,
+    travel_time_from_origin_min INTEGER NOT NULL,
+    PRIMARY KEY (schedule_id, station_id),
+    UNIQUE (schedule_id, stop_order)
+);
+
 CREATE TABLE IF NOT EXISTS national_rail_schedules (
+    -- Schedule IDs come from the timetable feed; keeping them as PKs avoids an
+    -- extra lookup layer in booking and route queries.
     schedule_id VARCHAR(20) PRIMARY KEY,
     line VARCHAR(10) NOT NULL,
     service_type VARCHAR(20) NOT NULL,
     direction VARCHAR(20) NOT NULL,
-    origin_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id),
-    destination_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id),
-    stops_in_order JSONB NOT NULL,
-    passed_through_stations JSONB NOT NULL DEFAULT '[]',
+    origin_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
     first_train_time TIME NOT NULL,
     last_train_time TIME NOT NULL,
-    travel_time_from_origin_min JSONB NOT NULL,
     frequency_min INTEGER NOT NULL,
     operates_on TEXT[] NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS national_rail_schedule_stops (
+    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
+    station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    stop_order INTEGER NOT NULL,
+    travel_time_from_origin_min INTEGER NOT NULL,
+    is_passed_through BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (schedule_id, station_id),
+    UNIQUE (schedule_id, stop_order)
+);
+
 CREATE TABLE IF NOT EXISTS national_rail_fares (
-    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id),
+    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
     fare_class VARCHAR(20) NOT NULL,
     base_fare_usd NUMERIC(8,2) NOT NULL,
     per_stop_rate_usd NUMERIC(8,2) NOT NULL,
@@ -90,12 +112,12 @@ CREATE TABLE IF NOT EXISTS national_rail_fares (
 
 CREATE TABLE IF NOT EXISTS national_rail_seat_layouts (
     layout_id VARCHAR(20) PRIMARY KEY,
-    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id)
+    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS national_rail_seats (
-    layout_id VARCHAR(20) NOT NULL REFERENCES national_rail_seat_layouts(layout_id),
-    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id),
+    layout_id VARCHAR(20) NOT NULL REFERENCES national_rail_seat_layouts(layout_id) ON DELETE CASCADE,
+    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
     coach VARCHAR(5) NOT NULL,
     fare_class VARCHAR(20) NOT NULL,
     seat_id VARCHAR(10) NOT NULL,
@@ -105,6 +127,8 @@ CREATE TABLE IF NOT EXISTS national_rail_seats (
 );
 
 CREATE TABLE IF NOT EXISTS registered_users (
+    -- User IDs are visible in mock data and live-test prompts, so we keep the
+    -- provided RUxx code as the primary key.
     user_id VARCHAR(20) PRIMARY KEY,
     full_name TEXT NOT NULL,
     first_name TEXT NOT NULL,
@@ -126,10 +150,10 @@ CREATE TABLE IF NOT EXISTS user_password_credentials (
 
 CREATE TABLE IF NOT EXISTS national_rail_bookings (
     booking_id VARCHAR(20) PRIMARY KEY,
-    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id),
-    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id),
-    origin_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id),
-    destination_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id),
+    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id) ON DELETE RESTRICT,
+    schedule_id VARCHAR(20) NOT NULL REFERENCES national_rail_schedules(schedule_id) ON DELETE RESTRICT,
+    origin_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(10) NOT NULL REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
     travel_date DATE NOT NULL,
     departure_time TIME NOT NULL,
     ticket_type VARCHAR(20) NOT NULL,
@@ -145,10 +169,10 @@ CREATE TABLE IF NOT EXISTS national_rail_bookings (
 
 CREATE TABLE IF NOT EXISTS metro_travels (
     trip_id VARCHAR(20) PRIMARY KEY,
-    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id),
-    schedule_id VARCHAR(20) NOT NULL REFERENCES metro_schedules(schedule_id),
-    origin_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id),
-    destination_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id),
+    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id) ON DELETE RESTRICT,
+    schedule_id VARCHAR(20) NOT NULL REFERENCES metro_schedules(schedule_id) ON DELETE RESTRICT,
+    origin_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(10) NOT NULL REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
     travel_date DATE NOT NULL,
     ticket_type VARCHAR(20) NOT NULL,
     day_pass_ref VARCHAR(20),
@@ -161,20 +185,30 @@ CREATE TABLE IF NOT EXISTS metro_travels (
 
 CREATE TABLE IF NOT EXISTS payments (
     payment_id VARCHAR(20) PRIMARY KEY,
-    booking_id VARCHAR(20) NOT NULL,
+    booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE RESTRICT,
+    trip_id VARCHAR(20) REFERENCES metro_travels(trip_id) ON DELETE RESTRICT,
     amount_usd NUMERIC(8,2) NOT NULL,
     method VARCHAR(30) NOT NULL,
     status VARCHAR(20) NOT NULL,
-    paid_at TIMESTAMPTZ NOT NULL
+    paid_at TIMESTAMPTZ NOT NULL,
+    CHECK (
+        (booking_id IS NOT NULL AND trip_id IS NULL)
+        OR (booking_id IS NULL AND trip_id IS NOT NULL)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
     feedback_id VARCHAR(20) PRIMARY KEY,
-    booking_id VARCHAR(20) NOT NULL,
-    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id),
+    booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE RESTRICT,
+    trip_id VARCHAR(20) REFERENCES metro_travels(trip_id) ON DELETE RESTRICT,
+    user_id VARCHAR(20) NOT NULL REFERENCES registered_users(user_id) ON DELETE RESTRICT,
     rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
     comment TEXT,
-    submitted_at TIMESTAMPTZ NOT NULL
+    submitted_at TIMESTAMPTZ NOT NULL,
+    CHECK (
+        (booking_id IS NOT NULL AND trip_id IS NULL)
+        OR (booking_id IS NULL AND trip_id IS NOT NULL)
+    )
 );
 
 
@@ -199,4 +233,5 @@ CREATE TABLE IF NOT EXISTS policy_documents (
 );
 
 -- Index for fast cosine similarity search
-CREATE INDEX IF NOT EXISTS ON policy_documents USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS policy_documents_embedding_hnsw_idx
+ON policy_documents USING hnsw (embedding vector_cosine_ops);

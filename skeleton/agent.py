@@ -34,6 +34,10 @@ import re
 from datetime import date
 from typing import Optional
 
+# TASK 6 EXTENSION:
+# The route tool can request the graph extension that minimises station-link
+# count for passengers who prefer a simpler route over the fastest route.
+
 from skeleton.llm_provider import llm
 from databases.relational.queries import (
     query_national_rail_availability,
@@ -50,6 +54,7 @@ from databases.relational.queries import (
 )
 from databases.graph.queries import (
     query_shortest_route,
+    query_fewest_transfers_route,
     query_cheapest_route,
     query_alternative_routes,
     query_interchange_path,
@@ -242,13 +247,14 @@ TOOLS = [
             "Find the best route or path between two stations. Use for ANY question about "
             "directions, how to get from A to B, fastest route, quickest route, or shortest path. "
             "Works for metro-only, rail-only, or cross-network journeys. "
-            "Use optimise_by='time' for fastest/quickest, 'cost' for cheapest."
+            "Use optimise_by='time' for fastest/quickest, 'cost' for cheapest, "
+            "or 'transfers' for the simplest route with the fewest station links."
         ),
         "parameters": {
             "origin_id":      {"type": "string", "description": "Station ID e.g. MS01 or NR01"},
             "destination_id": {"type": "string", "description": "Station ID e.g. MS09 or NR05"},
             "network":        {"type": "string", "description": "metro, rail, or auto (default auto — inferred from IDs)"},
-            "optimise_by":    {"type": "string", "description": "time (fastest, default) or cost (cheapest)"},
+            "optimise_by":    {"type": "string", "description": "time (fastest, default), cost (cheapest), or transfers (fewest station links)"},
         },
         "required": ["origin_id", "destination_id"],
     },
@@ -410,6 +416,12 @@ def _execute_tool(
                 result = query_interchange_path(origin_id, destination_id)
             elif optimise_by == "cost":
                 result = query_cheapest_route(
+                    origin_id=origin_id,
+                    destination_id=destination_id,
+                    network=network,
+                )
+            elif optimise_by in {"transfer", "transfers", "fewest_transfers"}:
+                result = query_fewest_transfers_route(
                     origin_id=origin_id,
                     destination_id=destination_id,
                     network=network,
