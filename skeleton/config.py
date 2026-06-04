@@ -13,9 +13,9 @@ load_dotenv()
 # Set LLM_PROVIDER to "gemini" or "ollama"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
 
-# Gemini settings (free tier: gemini-1.5-flash)
+# Gemini settings
 GEMINI_API_KEY        = os.getenv("GEMINI_API_KEY", "")
-GEMINI_CHAT_MODEL     = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.0-flash-lite")
+GEMINI_CHAT_MODEL     = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash-lite")
 GEMINI_EMBED_MODEL    = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 GEMINI_EMBED_DIM      = 3072
 
