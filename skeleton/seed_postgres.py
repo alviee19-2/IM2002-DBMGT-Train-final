@@ -45,6 +45,9 @@ def insert_many(cur, table, columns, rows):
     """Bulk insert with ON CONFLICT DO NOTHING. Returns row count inserted."""
     if not rows:
         return 0
+    # All seeders use ON CONFLICT DO NOTHING so the script is idempotent:
+    # teammates and TAs can safely re-run it after a reset or pull without
+    # creating duplicate rows or failing on primary-key collisions.
     sql = (
         f"INSERT INTO {table} ({', '.join(columns)}) VALUES %s "
         f"ON CONFLICT DO NOTHING"
@@ -152,6 +155,9 @@ def seed_metro_schedules(cur):
             )
         )
         travel_times = item["travel_time_from_origin_min"]
+        # The raw JSON stores stop order as an array, but the relational schema
+        # stores one row per stop. This keeps schedules in 3NF and lets queries
+        # compare origin/destination stop_order without parsing JSON in SQL.
         for stop_order, station_id in enumerate(item["stops_in_order"], start=1):
             stop_rows.append(
                 (
@@ -206,6 +212,9 @@ def seed_national_rail_schedules(cur):
         )
         travel_times = item["travel_time_from_origin_min"]
         passed_through = set(item.get("passed_through_stations", []))
+        # Express services may pass through stations without stopping. We keep
+        # that as an explicit boolean property on the stop row so route and
+        # timetable queries can distinguish served stops from pass-through data.
         for stop_order, station_id in enumerate(item["stops_in_order"], start=1):
             stop_rows.append(
                 (
@@ -261,6 +270,8 @@ def seed_seat_layouts(cur):
     seat_rows = []
     for item in data:
         layout_rows.append((item["layout_id"], item["schedule_id"]))
+        # Seat layouts are decomposed into individual seat rows because booking
+        # availability is checked at seat granularity, not at whole-coach level.
         for coach in item.get("coaches", []):
             for seat in coach.get("seats", []):
                 seat_rows.append(
@@ -324,6 +335,9 @@ def seed_users(cur):
         credential_rows.append(
             (
                 item["user_id"],
+                # Passwords from the mock JSON are never stored directly.
+                # Argon2 hashes include their own salt and cost parameters,
+                # which protects users even if the credentials table leaks.
                 hasher.hash(item["password"]),
                 item["registered_at"],
             )
@@ -455,6 +469,10 @@ def seed_payments(cur):
     rows = [
         (
             item["payment_id"],
+            # Source data uses one "booking_id" field for both national rail
+            # bookings (BK...) and metro trips (MT...). The schema splits them
+            # into nullable FKs so each payment still has real referential
+            # integrity instead of a loose polymorphic text reference.
             item["booking_id"] if item["booking_id"].startswith("BK") else None,
             item["booking_id"] if item["booking_id"].startswith("MT") else None,
             item["amount_usd"],
@@ -482,6 +500,8 @@ def seed_feedback(cur):
     rows = [
         (
             item["feedback_id"],
+            # Feedback follows the same BK/MT split as payments: exactly one of
+            # booking_id or trip_id is populated, matching the schema CHECK.
             item["booking_id"] if item["booking_id"].startswith("BK") else None,
             item["booking_id"] if item["booking_id"].startswith("MT") else None,
             item["user_id"],
@@ -530,6 +550,10 @@ def main():
 
     try:
         print("Seeding tables (dependency order):")
+        # The order follows foreign-key dependencies: parent reference tables
+        # first, then schedules/stops/fares/seats/users, then transactions and
+        # feedback. One transaction wraps the whole seed so a failure leaves the
+        # database unchanged instead of half-populated.
         seed_metro_stations(cur)
         seed_national_rail_stations(cur)
         seed_metro_schedules(cur)
