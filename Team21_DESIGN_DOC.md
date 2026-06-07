@@ -380,6 +380,4 @@ LIMIT 1;
 
 ---
 
-## Section 7 — Optional Extension
 
-> To be completed if Task 6 is submitted.
